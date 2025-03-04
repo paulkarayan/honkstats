@@ -66,3 +66,13 @@ X-axis	Mean Flatness (Honkiness) — higher values = honkier.
 Y-axis	Mean Centroid (Brightness) — higher values = brighter.
 Point Size	Attack Speed — faster attack = smaller dots.
 Point Color	Warmth Score — how many formants live under 1500 Hz (lower-mid warmth).
+
+
+# Basic run (concertinas only, no normalization)
+python finger.py
+
+# With Z-score normalization
+python finger.py --zscore
+
+# Use a custom folder (if your fingerprints are somewhere else)
+python finger.py --folder my_fingerprints/

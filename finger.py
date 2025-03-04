@@ -1,9 +1,11 @@
 import os
 import csv
+import argparse
+import pandas as pd
 import matplotlib.pyplot as plt
 
+# === Utility to Load Fingerprints ===
 def load_fingerprint(file_path):
-    """Load fingerprint data from a .fingerprint CSV file into a dict."""
     data = {}
     with open(file_path, newline='') as csvfile:
         reader = csv.reader(csvfile)
@@ -15,30 +17,33 @@ def load_fingerprint(file_path):
                 data[row[0]] = float(row[1])
     return data
 
-def plot_fingerprints(fingerprints, title, save_path):
-    """Generate a scatter plot comparing fingerprints."""
-    names = []
-    honkiness = []
-    brightness = []
-    attack_sizes = []
-    warmth_scores = []  # Formant count < 1500 Hz (proxy for warmth)
+# === Z-Score Normalization ===
+def zscore_normalize(fingerprints):
+    df = pd.DataFrame(fingerprints).T
+    numerical_cols = ['mean_centroid', 'mean_flatness', 'attack_time']
+    df[numerical_cols] = (df[numerical_cols] - df[numerical_cols].mean()) / df[numerical_cols].std()
+    return df.to_dict(orient='index')
+
+# === Plot Function ===
+def plot_fingerprints(fingerprints, title, save_path, normalization_steps=None):
+    names, honkiness, brightness, attack_sizes, warmth_scores = [], [], [], [], []
 
     for name, data in fingerprints.items():
         names.append(name)
         honkiness.append(data['mean_flatness'])
         brightness.append(data['mean_centroid'])
-        attack_sizes.append(500 * (1 / (1 + data['attack_time'])))  # Faster attack = smaller dot
-
-        # Warmth proxy = formants under 1500 Hz
+        attack_sizes.append(500 * (1 / (1 + data['attack_time'])))
         warmth_scores.append(sum(1 for f in data['formant_peaks'] if f < 1500))
 
     plt.figure(figsize=(12, 8))
+
     scatter = plt.scatter(
-        honkiness, brightness,
-        s=attack_sizes,
-        c=warmth_scores,
-        cmap='YlOrRd',
-        edgecolor='k', alpha=0.8
+        honkiness, brightness, 
+        s=attack_sizes, 
+        c=warmth_scores, 
+        cmap='YlOrRd', 
+        edgecolor='k', 
+        alpha=0.85
     )
     plt.colorbar(scatter, label="Warmth Score (Formants < 1500 Hz)")
 
@@ -47,33 +52,62 @@ def plot_fingerprints(fingerprints, title, save_path):
 
     plt.xlabel("Honkiness (Spectral Flatness)")
     plt.ylabel("Brightness (Spectral Centroid in Hz)")
-    plt.title(title)
-    plt.grid(True)
+    
+    full_title = title
+    if normalization_steps:
+        full_title += f" [{', '.join(normalization_steps)}]"
+    plt.title(full_title)
 
+    plt.grid(True)
     plt.savefig(save_path, dpi=300)
     plt.show()
 
-def analyze_fingerprints(folder):
-    """Load all fingerprints, plot two versions: without and with oboe/English horn."""
+# === Core Analysis - With & Without Oboe/English Horn ===
+def analyze_fingerprints(folder, zscore):
     fingerprints = {}
-    
-    # Load all fingerprints into a dict
+
     for filename in os.listdir(folder):
         if filename.endswith(".fingerprint"):
             name = filename.replace(".fingerprint", "")
             fingerprints[name] = load_fingerprint(os.path.join(folder, filename))
-    
-    # Separate concertinas and add "oboe" and "englishhorn" only in one plot
+
+    # Separate regular concertinas and add oboe/englishhorn only in the second plot
     concertinas_only = {k: v for k, v in fingerprints.items() if k not in ["oboe", "englishhorn"]}
     all_instruments = fingerprints.copy()
 
-    # Plot just concertinas
-    plot_fingerprints(concertinas_only, "Concertina Timbre Comparison (No Oboe/English Horn)", "comparison_without_oboe.png")
+    # Build list of normalization steps to embed in titles
+    normalization_steps = []
+    if zscore:
+        normalization_steps.append("Z-score")
 
-    # Plot concertinas + oboe and English horn
+    # === First Plot: Concertinas Only ===
+    if zscore:
+        concertinas_only = zscore_normalize(concertinas_only)
+    plot_fingerprints(
+        concertinas_only,
+        "Concertina Timbre Comparison (No Oboe/English Horn)",
+        "comparison_without_oboe.png",
+        normalization_steps
+    )
+
+    # === Second Plot: Concertinas + Oboe + English Horn ===
     if "oboe" in fingerprints and "englishhorn" in fingerprints:
-        plot_fingerprints(all_instruments, "Concertina vs Oboe and English Horn Comparison", "comparison_with_oboe.png")
+        if zscore:
+            all_instruments = zscore_normalize(all_instruments)
+        plot_fingerprints(
+            all_instruments,
+            "Concertina vs Oboe & English Horn Comparison",
+            "comparison_with_oboe.png",
+            normalization_steps
+        )
+    else:
+        print("⚠️ Skipping 'with oboe' plot — oboe and/or englishhorn fingerprints not found.")
 
-# Run the analysis on your folder
+# === CLI Handler ===
 if __name__ == "__main__":
-    analyze_fingerprints("fingerprints")
+    parser = argparse.ArgumentParser(description="Analyze and plot concertina fingerprints from a folder.")
+    parser.add_argument("--folder", default="fingerprints", help="Folder containing .fingerprint files.")
+    parser.add_argument("--zscore", action="store_true", help="Apply Z-score normalization to fingerprints.")
+    args = parser.parse_args()
+
+    analyze_fingerprints(args.folder, zscore=args.zscore)

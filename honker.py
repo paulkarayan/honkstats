@@ -1,73 +1,94 @@
-import librosa
-import numpy as np
-import csv
 import os
-from scipy.signal import find_peaks
+import csv
 import argparse
+import pandas as pd
+import matplotlib.pyplot as plt
 
-def analyze_full_concertina_file(file_path, output_dir="fingerprints", frame_length=2048, hop_length=512):
-    # Ensure output directory exists
-    os.makedirs(output_dir, exist_ok=True)
+def load_fingerprint(file_path):
+    """Load a .fingerprint CSV file into a dict."""
+    data = {}
+    with open(file_path, newline='') as csvfile:
+        reader = csv.reader(csvfile)
+        next(reader)  # Skip header row
+        for row in reader:
+            if row[0] == "formant_peaks":
+                data[row[0]] = [float(f) for f in row[1].split(';')]
+            else:
+                data[row[0]] = float(row[1])
+    return data
 
-    # Load audio
-    y, sr = librosa.load(file_path, sr=None)
+def zscore_normalize(fingerprints):
+    """Apply Z-score normalization to all numeric columns in fingerprints."""
+    df = pd.DataFrame(fingerprints).T
+    numerical_cols = ['mean_centroid', 'mean_flatness', 'attack_time']
 
-    # Spectral features computed frame-by-frame
-    spectral_centroid = librosa.feature.spectral_centroid(y=y, sr=sr, n_fft=frame_length, hop_length=hop_length)[0]
-    spectral_flatness = librosa.feature.spectral_flatness(y=y, n_fft=frame_length, hop_length=hop_length)[0]
+    # Apply Z-score normalization
+    df[numerical_cols] = (df[numerical_cols] - df[numerical_cols].mean()) / df[numerical_cols].std()
 
-    # Onset/attack detection
-    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-    onset_frames = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr)
+    return df.to_dict(orient='index')
 
-    # Attack time estimate (first onset to max onset strength within a short window)
-    if len(onset_frames) > 0:
-        peak_frame = np.argmax(onset_env)
-        attack_time = (peak_frame - onset_frames[0]) / sr
+def plot_fingerprints(fingerprints, title, save_path):
+    """Create scatter plot comparing honkiness, brightness, and warmth for all instruments."""
+    names = []
+    honkiness = []
+    brightness = []
+    attack_sizes = []
+    warmth_scores = []  # Number of formants under 1500 Hz (proxy for warmth)
+
+    for name, data in fingerprints.items():
+        names.append(name)
+        honkiness.append(data['mean_flatness'])
+        brightness.append(data['mean_centroid'])
+        attack_sizes.append(500 * (1 / (1 + data['attack_time'])))  # Faster attack = smaller dot
+
+        # Warmth proxy = formant count < 1500 Hz
+        warmth_scores.append(sum(1 for f in data['formant_peaks'] if f < 1500))
+
+    plt.figure(figsize=(12, 8))
+
+    scatter = plt.scatter(
+        honkiness, brightness, 
+        s=attack_sizes, 
+        c=warmth_scores, 
+        cmap='YlOrRd', 
+        edgecolor='k', 
+        alpha=0.85
+    )
+
+    plt.colorbar(scatter, label="Warmth Score (Formants < 1500 Hz)")
+
+    for i, name in enumerate(names):
+        plt.annotate(name, (honkiness[i], brightness[i]), fontsize=9, ha='right', va='bottom')
+
+    plt.xlabel("Honkiness (Spectral Flatness)")
+    plt.ylabel("Brightness (Spectral Centroid in Hz)")
+    plt.title(title)
+    plt.grid(True)
+
+    plt.savefig(save_path, dpi=300)
+    plt.show()
+
+def analyze_fingerprints(folder, zscore):
+    """Load all fingerprints from folder and produce comparison plot."""
+    fingerprints = {}
+
+    # Load all fingerprints into a dictionary
+    for filename in os.listdir(folder):
+        if filename.endswith(".fingerprint"):
+            name = filename.replace(".fingerprint", "")
+            fingerprints[name] = load_fingerprint(os.path.join(folder, filename))
+
+    if zscore:
+        fingerprints = zscore_normalize(fingerprints)
+        plot_fingerprints(fingerprints, "Z-Score Normalized Concertina Timbre Comparison", "comparison_zscore.png")
     else:
-        attack_time = np.nan
-
-    # Aggregate stats across the file
-    stats = {
-        "mean_centroid": np.mean(spectral_centroid),
-        "min_centroid": np.min(spectral_centroid),
-        "max_centroid": np.max(spectral_centroid),
-        "mean_flatness": np.mean(spectral_flatness),
-        "min_flatness": np.min(spectral_flatness),
-        "max_flatness": np.max(spectral_flatness),
-        "attack_time": attack_time
-    }
-
-    # Spectral envelope and formants
-    stft = np.abs(librosa.stft(y, n_fft=frame_length, hop_length=hop_length))
-    avg_spectrum = np.mean(stft, axis=1)
-    freqs = librosa.fft_frequencies(sr=sr)
-
-    avg_spectrum_db = librosa.amplitude_to_db(avg_spectrum)
-    peaks, _ = find_peaks(avg_spectrum_db, distance=5)
-    formant_freqs = freqs[peaks]
-
-    # Add formant peaks (join into string for CSV)
-    stats["formant_peaks"] = ";".join([f"{freq:.2f}" for freq in formant_freqs])
-
-    # Create output file path
-    base_name = os.path.splitext(os.path.basename(file_path))[0]
-    output_file = os.path.join(output_dir, f"{base_name}.fingerprint")
-
-    # Write fingerprint to CSV
-    with open(output_file, mode='w', newline='') as file:
-        writer = csv.writer(file)
-        writer.writerow(["Feature", "Value"])
-        for key, value in stats.items():
-            writer.writerow([key, value])
-
-    print(f"Fingerprint saved to: {output_file}")
+        plot_fingerprints(fingerprints, "Raw Concertina Timbre Comparison", "comparison_raw.png")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Analyze a concertina recording and produce a timbre fingerprint.")
-    parser.add_argument("file_path", help="Path to the audio file (mp3, wav, etc.) to analyze.")
-    parser.add_argument("--output-dir", default="fingerprints", help="Directory to save fingerprint file.")
+    parser = argparse.ArgumentParser(description="Analyze and plot concertina fingerprints from a folder.")
+    parser.add_argument("folder", help="Folder containing .fingerprint files.")
+    parser.add_argument("--zscore", action="store_true", help="Apply Z-score normalization to fingerprints.")
 
     args = parser.parse_args()
 
-    analyze_full_concertina_file(args.file_path, args.output_dir)
+    analyze_fingerprints(args.folder, zscore=args.zscore)
