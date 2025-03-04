@@ -4,7 +4,7 @@ import argparse
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# === Utility to Load Fingerprints ===
+
 def load_fingerprint(file_path):
     data = {}
     with open(file_path, newline='') as csvfile:
@@ -17,14 +17,14 @@ def load_fingerprint(file_path):
                 data[row[0]] = float(row[1])
     return data
 
-# === Z-Score Normalization ===
+# I DONT USE === Z-Score Normalization ===
 def zscore_normalize(fingerprints):
     df = pd.DataFrame(fingerprints).T
     numerical_cols = ['mean_centroid', 'mean_flatness', 'attack_time']
     df[numerical_cols] = (df[numerical_cols] - df[numerical_cols].mean()) / df[numerical_cols].std()
     return df.to_dict(orient='index')
 
-# === Plot Function ===
+
 def plot_fingerprints(fingerprints, title, save_path, normalization_steps=None):
     names, honkiness, brightness, attack_sizes, warmth_scores = [], [], [], [], []
 
@@ -32,8 +32,14 @@ def plot_fingerprints(fingerprints, title, save_path, normalization_steps=None):
         names.append(name)
         honkiness.append(data['mean_flatness'])
         brightness.append(data['mean_centroid'])
-        attack_sizes.append(500 * (1 / (1 + data['attack_time'])))
         warmth_scores.append(sum(1 for f in data['formant_peaks'] if f < 1500))
+
+
+        if 'attack_time' in data:
+            attack_sizes.append(500 * (1 / (1 + data['attack_time'])))
+        else:
+            attack_sizes.append(100)  # Default size if attack_time is missing
+
 
     plt.figure(figsize=(12, 8))
 
@@ -62,7 +68,7 @@ def plot_fingerprints(fingerprints, title, save_path, normalization_steps=None):
     plt.savefig(save_path, dpi=300)
     plt.show()
 
-# === Core Analysis - With & Without Oboe/English Horn ===
+
 def analyze_fingerprints(folder, zscore):
     fingerprints = {}
 
@@ -75,7 +81,6 @@ def analyze_fingerprints(folder, zscore):
     concertinas_only = {k: v for k, v in fingerprints.items() if k not in ["oboe", "englishhorn"]}
     all_instruments = fingerprints.copy()
 
-    # Build list of normalization steps to embed in titles
     normalization_steps = []
     if zscore:
         normalization_steps.append("Z-score")
@@ -101,9 +106,9 @@ def analyze_fingerprints(folder, zscore):
             normalization_steps
         )
     else:
-        print("⚠️ Skipping 'with oboe' plot — oboe and/or englishhorn fingerprints not found.")
+        print("Skipping 'with oboe' plot — oboe and/or englishhorn fingerprints not found.")
 
-# === CLI Handler ===
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze and plot concertina fingerprints from a folder.")
     parser.add_argument("--folder", default="fingerprints", help="Folder containing .fingerprint files.")

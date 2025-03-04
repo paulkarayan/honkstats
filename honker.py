@@ -1,94 +1,120 @@
-import os
-import csv
 import argparse
-import pandas as pd
-import matplotlib.pyplot as plt
+import librosa
+import numpy as np
+import csv
+import os
+from scipy.signal import find_peaks
 
-def load_fingerprint(file_path):
-    """Load a .fingerprint CSV file into a dict."""
-    data = {}
-    with open(file_path, newline='') as csvfile:
-        reader = csv.reader(csvfile)
-        next(reader)  # Skip header row
-        for row in reader:
-            if row[0] == "formant_peaks":
-                data[row[0]] = [float(f) for f in row[1].split(';')]
-            else:
-                data[row[0]] = float(row[1])
-    return data
+# === Normalization Functions ===
 
-def zscore_normalize(fingerprints):
-    """Apply Z-score normalization to all numeric columns in fingerprints."""
-    df = pd.DataFrame(fingerprints).T
-    numerical_cols = ['mean_centroid', 'mean_flatness', 'attack_time']
+def normalize_loudness(y):
+    """Normalize audio to consistent RMS level."""
+    rms = np.sqrt(np.mean(y**2))
+    return y / (rms + 1e-9)
 
-    # Apply Z-score normalization
-    df[numerical_cols] = (df[numerical_cols] - df[numerical_cols].mean()) / df[numerical_cols].std()
+def spectral_whitening(y, sr, n_fft=2048):
+    """Flatten spectral envelope to remove recording bias."""
+    stft = librosa.stft(y, n_fft=n_fft)
+    magnitudes = np.abs(stft)
+    spectral_mean = np.mean(magnitudes, axis=1, keepdims=True)
+    whitened = magnitudes / (spectral_mean + 1e-9)
+    return librosa.istft(whitened * np.exp(1j * np.angle(stft)))
 
-    return df.to_dict(orient='index')
+# === Feature Computation Functions ===
 
-def plot_fingerprints(fingerprints, title, save_path):
-    """Create scatter plot comparing honkiness, brightness, and warmth for all instruments."""
-    names = []
-    honkiness = []
-    brightness = []
-    attack_sizes = []
-    warmth_scores = []  # Number of formants under 1500 Hz (proxy for warmth)
+def compute_attack_time(y, sr):
+    """Simple onset-based attack time estimation."""
+    envelope = librosa.onset.onset_strength(y=y, sr=sr)
+    peak_idx = np.argmax(envelope > (0.5 * np.max(envelope)))
+    return peak_idx / sr  # Convert to seconds
 
-    for name, data in fingerprints.items():
-        names.append(name)
-        honkiness.append(data['mean_flatness'])
-        brightness.append(data['mean_centroid'])
-        attack_sizes.append(500 * (1 / (1 + data['attack_time'])))  # Faster attack = smaller dot
+def estimate_formant_peaks(y, sr, n_peaks=5):
+    """
+    Estimate prominent spectral peaks (formants) from an audio signal.
+    This is a rough proxy, not actual LPC formants.
+    """
+    spectrum = np.abs(librosa.stft(y, n_fft=2048)).mean(axis=1)
+    freqs = librosa.fft_frequencies(sr=sr)
 
-        # Warmth proxy = formant count < 1500 Hz
-        warmth_scores.append(sum(1 for f in data['formant_peaks'] if f < 1500))
+    peaks, _ = find_peaks(spectrum, prominence=0.05)
 
-    plt.figure(figsize=(12, 8))
+    # Get the top `n_peaks` peaks sorted by magnitude (most prominent first)
+    peak_freqs = freqs[peaks]
+    sorted_peaks = sorted(peak_freqs, key=lambda f: -spectrum[peaks][np.where(peak_freqs == f)[0][0]])
 
-    scatter = plt.scatter(
-        honkiness, brightness, 
-        s=attack_sizes, 
-        c=warmth_scores, 
-        cmap='YlOrRd', 
-        edgecolor='k', 
-        alpha=0.85
-    )
+    return sorted_peaks[:n_peaks]
 
-    plt.colorbar(scatter, label="Warmth Score (Formants < 1500 Hz)")
+def compute_features_with_bandpass(y, sr, low_freq=0, high_freq=None):
+    """Compute spectral features with optional band-limiting after STFT."""
+    stft = np.abs(librosa.stft(y))
 
-    for i, name in enumerate(names):
-        plt.annotate(name, (honkiness[i], brightness[i]), fontsize=9, ha='right', va='bottom')
+    # Band-limit the STFT if desired
+    freqs = librosa.fft_frequencies(sr=sr)
+    if low_freq > 0 or high_freq is not None:
+        if high_freq is None:
+            high_freq = freqs[-1]
+        low_bin = np.where(freqs >= low_freq)[0][0]
+        high_bin = np.where(freqs <= high_freq)[0][-1]
+        stft = stft[low_bin:high_bin, :]
 
-    plt.xlabel("Honkiness (Spectral Flatness)")
-    plt.ylabel("Brightness (Spectral Centroid in Hz)")
-    plt.title(title)
-    plt.grid(True)
+    centroid = librosa.feature.spectral_centroid(S=stft, sr=sr).mean()
+    flatness = librosa.feature.spectral_flatness(S=stft).mean()
 
-    plt.savefig(save_path, dpi=300)
-    plt.show()
+    return {
+        'mean_centroid': centroid,
+        'mean_flatness': flatness,
+    }
 
-def analyze_fingerprints(folder, zscore):
-    """Load all fingerprints from folder and produce comparison plot."""
-    fingerprints = {}
-
-    # Load all fingerprints into a dictionary
-    for filename in os.listdir(folder):
-        if filename.endswith(".fingerprint"):
-            name = filename.replace(".fingerprint", "")
-            fingerprints[name] = load_fingerprint(os.path.join(folder, filename))
-
-    if zscore:
-        fingerprints = zscore_normalize(fingerprints)
-        plot_fingerprints(fingerprints, "Z-Score Normalized Concertina Timbre Comparison", "comparison_zscore.png")
-    else:
-        plot_fingerprints(fingerprints, "Raw Concertina Timbre Comparison", "comparison_raw.png")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Analyze and plot concertina fingerprints from a folder.")
-    parser.add_argument("folder", help="Folder containing .fingerprint files.")
-    parser.add_argument("--zscore", action="store_true", help="Apply Z-score normalization to fingerprints.")
+    parser = argparse.ArgumentParser(description="Analyze concertina audio and extract timbre features.")
+    parser.add_argument("file", help="Audio file to analyze.")
+    parser.add_argument("--bandpass", nargs=2, type=float, metavar=('LOW', 'HIGH'),
+                        help="Optional bandpass filter (low and high cutoff frequencies in Hz).")
+    parser.add_argument("--normalize-loudness", action="store_true",
+                        help="Apply RMS loudness normalization before analysis.")
+    parser.add_argument("--spectral-whitening", action="store_true",
+                        help="Apply spectral whitening before analysis.")
 
     args = parser.parse_args()
 
-    analyze_fingerprints(args.folder, zscore=args.zscore)
+    y, sr = librosa.load(args.file, sr=None)
+
+    # Apply optional normalizations
+    if args.normalize_loudness:
+        y = normalize_loudness(y)
+        print("Applied loudness normalization.")
+
+    if args.spectral_whitening:
+        y = spectral_whitening(y, sr)
+        print("Applied spectral whitening.")
+
+    # Bandpass processing
+    low_freq, high_freq = 0, None
+    if args.bandpass:
+        low_freq, high_freq = args.bandpass
+
+    features = compute_features_with_bandpass(y, sr, low_freq, high_freq)
+    features['attack_time'] = compute_attack_time(y, sr)
+    features['formant_peaks'] = estimate_formant_peaks(y, sr)
+
+    print(f"\nExtracted features (bandpass {low_freq}-{high_freq} Hz):")
+    for k, v in features.items():
+        if isinstance(v, list):
+            print(f"{k}: {', '.join(f'{x:.1f}' for x in v)}")
+        else:
+            print(f"{k}: {v:.2f}")
+
+    os.makedirs("fingerprints", exist_ok=True)
+    basename = os.path.basename(args.file).replace('.mp3', '.fingerprint')
+    fingerprint_file = os.path.join("fingerprints", basename)
+
+    with open(fingerprint_file, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['feature', 'value'])
+        for key, value in features.items():
+            if isinstance(value, list):
+                value = ';'.join(map(str, value))  # formants as "x;y;z"
+            writer.writerow([key, value])
+
+    print(f"\nFingerprint saved to {fingerprint_file}")

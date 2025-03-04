@@ -43,7 +43,7 @@ python honker.py "recordings/marymac.mp3" # not sure what kind this is but its b
 python honker.py "recordings/carroll-noelhill.mp3" 
 
 for file in recordings/*.mp3; do
-    python honker.py "$file"
+    python honker.py "$file" --bandpass 200 3000 --normalize-loudness --spectral-whitening
 done
 
 
@@ -58,6 +58,21 @@ for file in recordings/*.mp3; do
         python analyze_concertina.py "$file"
     fi
 done
+
+
+
+# Basic extraction (no filters)
+python honker.py somefile.mp3
+# With bandpass
+python honker.py somefile.mp3 --bandpass 200 3000
+# With loudness normalization
+python honker.py somefile.mp3 --normalize-loudness
+# With spectral whitening
+python honker.py somefile.mp3 --spectral-whitening
+
+# All at once
+python honker.py somefile.mp3 --bandpass 200 3000 --normalize-loudness --spectral-whitening
+
 
 
 ### finger.py
