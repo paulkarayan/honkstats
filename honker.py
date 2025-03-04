@@ -3,6 +3,7 @@ import librosa
 import numpy as np
 import csv
 import os
+import matplotlib.pyplot as plt
 from scipy.signal import find_peaks
 
 # === Normalization Functions ===
@@ -29,16 +30,12 @@ def compute_attack_time(y, sr):
     return peak_idx / sr  # Convert to seconds
 
 def estimate_formant_peaks(y, sr, n_peaks=5):
-    """
-    Estimate prominent spectral peaks (formants) from an audio signal.
-    This is a rough proxy, not actual LPC formants.
-    """
+    """Estimate prominent spectral peaks (formants) from average spectrum."""
     spectrum = np.abs(librosa.stft(y, n_fft=2048)).mean(axis=1)
     freqs = librosa.fft_frequencies(sr=sr)
 
     peaks, _ = find_peaks(spectrum, prominence=0.05)
 
-    # Get the top `n_peaks` peaks sorted by magnitude (most prominent first)
     peak_freqs = freqs[peaks]
     sorted_peaks = sorted(peak_freqs, key=lambda f: -spectrum[peaks][np.where(peak_freqs == f)[0][0]])
 
@@ -48,7 +45,7 @@ def compute_features_with_bandpass(y, sr, low_freq=0, high_freq=None):
     """Compute spectral features with optional band-limiting after STFT."""
     stft = np.abs(librosa.stft(y))
 
-    # Band-limit the STFT if desired
+    # Band-limit the STFT if requested
     freqs = librosa.fft_frequencies(sr=sr)
     if low_freq > 0 or high_freq is not None:
         if high_freq is None:
@@ -57,14 +54,32 @@ def compute_features_with_bandpass(y, sr, low_freq=0, high_freq=None):
         high_bin = np.where(freqs <= high_freq)[0][-1]
         stft = stft[low_bin:high_bin, :]
 
-    centroid = librosa.feature.spectral_centroid(S=stft, sr=sr).mean()
+    # Compute spectral features
+    centroid = librosa.feature.spectral_centroid(S=stft, sr=sr)
     flatness = librosa.feature.spectral_flatness(S=stft).mean()
 
+    # Return per-frame centroid + summary values
     return {
-        'mean_centroid': centroid,
+        'centroid_curve': centroid.squeeze(),
+        'mean_centroid': centroid.mean(),
         'mean_flatness': flatness,
     }
 
+def plot_and_save_centroid_curve(centroid_curve, sr, file_path):
+    """Save spectral centroid curve as an image."""
+    times = librosa.times_like(centroid_curve, sr=sr)
+    plt.figure(figsize=(10, 4))
+    plt.plot(times, centroid_curve, label="Spectral Centroid", color="darkorange")
+    plt.xlabel("Time (seconds)")
+    plt.ylabel("Frequency (Hz)")
+    plt.title("Spectral Centroid Curve")
+    plt.grid(True)
+    plt.legend()
+
+    plt.savefig(file_path, dpi=300)
+    plt.close()
+
+# === Main Processing ===
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze concertina audio and extract timbre features.")
@@ -89,32 +104,48 @@ if __name__ == "__main__":
         y = spectral_whitening(y, sr)
         print("Applied spectral whitening.")
 
-    # Bandpass processing
+    # Bandpass filter
     low_freq, high_freq = 0, None
     if args.bandpass:
         low_freq, high_freq = args.bandpass
 
+    # Compute features
     features = compute_features_with_bandpass(y, sr, low_freq, high_freq)
     features['attack_time'] = compute_attack_time(y, sr)
     features['formant_peaks'] = estimate_formant_peaks(y, sr)
 
+    # Ensure fingerprints directory exists
+    os.makedirs("fingerprints", exist_ok=True)
+
+    # Prepare file paths
+    base_name = os.path.basename(args.file).replace('.mp3', '')
+    fingerprint_file = os.path.join("fingerprints", f"{base_name}.fingerprint")
+    centroid_plot_file = os.path.join("fingerprints", f"{base_name}_centroid_curve.png")
+
+    # Save spectral centroid curve plot
+    plot_and_save_centroid_curve(features['centroid_curve'], sr, centroid_plot_file)
+
+    print(f"Saved spectral centroid curve plot to {centroid_plot_file}")
+
+    # Print extracted features (summary only)
     print(f"\nExtracted features (bandpass {low_freq}-{high_freq} Hz):")
     for k, v in features.items():
-        if isinstance(v, list):
+        if k == "centroid_curve":
+            continue
+        elif isinstance(v, list):
             print(f"{k}: {', '.join(f'{x:.1f}' for x in v)}")
         else:
             print(f"{k}: {v:.2f}")
 
-    os.makedirs("fingerprints", exist_ok=True)
-    basename = os.path.basename(args.file).replace('.mp3', '.fingerprint')
-    fingerprint_file = os.path.join("fingerprints", basename)
-
+    # Save features to .fingerprint file
     with open(fingerprint_file, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(['feature', 'value'])
         for key, value in features.items():
-            if isinstance(value, list):
-                value = ';'.join(map(str, value))  # formants as "x;y;z"
+            if key == "centroid_curve":
+                continue  # Don't save full curve to CSV
+            elif isinstance(value, list):
+                value = ';'.join(map(str, value))
             writer.writerow([key, value])
 
     print(f"\nFingerprint saved to {fingerprint_file}")
