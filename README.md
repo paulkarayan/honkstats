@@ -63,9 +63,6 @@ done
 python finger.py
 
 
-
-### Inger.py Visualization Mapping
-
 | Axis/Attribute   | Meaning                                                                                              |
 |------------------|-----------------------------------------------------------------------------------------------------|
 | X-axis           | Mean Flatness (Honkiness) — higher values = honkier.                                                |
