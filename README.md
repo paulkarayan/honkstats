@@ -39,13 +39,25 @@ Formants around 450 Hz and 910 Hz, which is close to that English Horn lower-mid
 ###
 
 python honker.py "recordings/Thomas - hornpipes.mp3"
-python honker.py "recordings/Thomas - jigs.mp3"
-python honker.py "recordings/Thomas - reels.mp3"
-python honker.py "recordings/oboe.mp3"
-python honker.py "recordings/englishhorn.mp3"
 python honker.py "recordings/marymac.mp3" # not sure what kind this is but its beautiful
 python honker.py "recordings/carroll-noelhill.mp3" 
 
+for file in recordings/*.mp3; do
+    python honker.py "$file"
+done
+
+
+for file in recordings/*.mp3; do
+    filename=$(basename -- "$file")
+    fingerprint_file="fingerprints/${filename%.mp3}.fingerprint"
+
+    if [ -f "$fingerprint_file" ]; then
+        echo "Skipping $file — fingerprint already exists."
+    else
+        echo "Processing $file..."
+        python analyze_concertina.py "$file"
+    fi
+done
 
 
 ### finger.py
